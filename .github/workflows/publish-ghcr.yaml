@@ -1,0 +1,104 @@
+name: Publish GHCR image
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    name: Build and push
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Check flake
+        run: nix flake check -L
+
+      - name: Build image tarball
+        run: nix build .#dockerImage -L
+
+      - name: Load image
+        id: image
+        run: |
+          set -euo pipefail
+
+          load_output="$(docker load < result)"
+          printf '%s\n' "$load_output"
+
+          local_image="$(printf '%s\n' "$load_output" | sed -n 's/^Loaded image: //p' | tail -n1)"
+          if [ -z "$local_image" ]; then
+            echo "Could not determine loaded image tag from docker load output" >&2
+            exit 1
+          fi
+
+          version="${local_image##*:}"
+          if [ -z "$version" ] || [ "$version" = "$local_image" ]; then
+            echo "Could not determine image version from $local_image" >&2
+            exit 1
+          fi
+
+          echo "local_image=$local_image" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag and push image
+        env:
+          LOCAL_IMAGE: ${{ steps.image.outputs.local_image }}
+          VERSION: ${{ steps.image.outputs.version }}
+          REGISTRY: ghcr.io
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          image_name="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          remote_image="$REGISTRY/$image_name"
+          short_sha="${GITHUB_SHA::12}"
+
+          tags=(
+            "$remote_image:$VERSION"
+            "$remote_image:sha-$short_sha"
+          )
+
+          if [ "$GITHUB_REF_TYPE" = "branch" ] && [ "$GITHUB_REF_NAME" = "$DEFAULT_BRANCH" ]; then
+            tags+=("$remote_image:latest")
+          fi
+
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            ref_tag="${GITHUB_REF_NAME#v}"
+            tags+=("$remote_image:$ref_tag")
+          fi
+
+          printf '%s\n' "${tags[@]}" | awk '!seen[$0]++' > /tmp/image-tags
+
+          while IFS= read -r tag; do
+            echo "Pushing $tag"
+            docker tag "$LOCAL_IMAGE" "$tag"
+            docker push "$tag"
+          done < /tmp/image-tags

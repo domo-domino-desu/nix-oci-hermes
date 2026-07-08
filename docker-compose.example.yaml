@@ -1,0 +1,24 @@
+services:
+  hermes:
+    image: nix-for-hermes:0.18.2
+    container_name: hermes
+    restart: unless-stopped
+    ports:
+      - "8642:8642"
+      - "9119:9119"
+    env_file:
+      - path: ./hermes.env
+        required: false
+    environment:
+      HTTP_PROXY: "http://example.com"
+      HTTPS_PROXY: "http://example.com"
+      ALL_PROXY: "http://example.com"
+      NO_PROXY: "127.0.0.1,localhost,::1"
+      http_proxy: "http://example.com"
+      https_proxy: "http://example.com"
+      all_proxy: "http://example.com"
+      no_proxy: "127.0.0.1,localhost,::1"
+    volumes:
+      - ./data:/data
+      - ./home:/home/hermes
+      - ./nix:/nix
