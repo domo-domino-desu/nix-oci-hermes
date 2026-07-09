@@ -19,9 +19,6 @@ services:
       all_proxy: "http://example.com"
       no_proxy: "127.0.0.1,localhost,::1"
     volumes:
-      - hermes-data:/data
-      - hermes-home:/home/hermes
-
-volumes:
-  hermes-data:
-  hermes-home:
+      # /data and /home/hermes are repaired by the entrypoint before Hermes services start.
+      - ./data:/data
+      - ./home:/home/hermes

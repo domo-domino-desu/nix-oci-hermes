@@ -33,44 +33,27 @@
 
       hermesPackage = hermes-agent.packages.${system}.messaging;
       commaPackage = nix-index-database.packages.${system}.comma-with-db;
+      lib = pkgs.lib;
+      containerPath = "/usr/local/bin:/bin:/usr/bin";
 
-      runtimeRoot = pkgs.runCommand "nix-for-hermes-runtime-root" { } ''
-        mkdir -p \
-          $out/bin \
-          $out/etc/nix \
-          $out/etc/profile.d \
-          $out/etc/s6-services/nix-daemon \
-          $out/etc/s6-services/hermes-gateway \
-          $out/etc/s6-services/hermes-dashboard \
-          $out/root \
-          $out/tmp \
-          $out/var/tmp \
-          $out/data/.hermes \
-          $out/home/hermes \
-          $out/nix/var/nix/daemon-socket \
-          $out/nix/var/nix/db \
-          $out/nix/var/nix/gcroots/per-user/hermes \
-          $out/nix/var/nix/profiles/per-user/hermes \
-          $out/nix/var/log/nix/drvs
-
-        cat > $out/etc/passwd <<'EOF'
+      passwdFile = pkgs.writeText "nix-for-hermes-passwd" ''
         root:x:0:0:root:/root:/bin/sh
         hermes:x:10000:10000:Hermes Agent:/home/hermes:/bin/sh
-        EOF
+      '';
 
-        cat > $out/etc/group <<'EOF'
+      groupFile = pkgs.writeText "nix-for-hermes-group" ''
         root:x:0:
         hermes:x:10000:
-        EOF
+      '';
 
-        cat > $out/etc/nsswitch.conf <<'EOF'
+      nsswitchFile = pkgs.writeText "nix-for-hermes-nsswitch.conf" ''
         hosts: files dns
         passwd: files
         group: files
         shadow: files
-        EOF
+      '';
 
-        cat > $out/etc/nix/nix.conf <<'EOF'
+      nixConfFile = pkgs.writeText "nix-for-hermes-nix.conf" ''
         experimental-features = nix-command flakes
         sandbox = false
         build-users-group =
@@ -78,9 +61,9 @@
         trusted-users = root hermes
         substituters = https://cache.nixos.org/
         trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
-        EOF
+      '';
 
-        cat > $out/etc/profile.d/proxy.sh <<'EOF'
+      proxyProfile = pkgs.writeText "nix-for-hermes-proxy.sh" ''
         # Keep upper/lowercase proxy variables in sync for interactive shells.
         if [ -n "''${HTTP_PROXY:-}" ] && [ -z "''${http_proxy:-}" ]; then export http_proxy="$HTTP_PROXY"; fi
         if [ -n "''${http_proxy:-}" ] && [ -z "''${HTTP_PROXY:-}" ]; then export HTTP_PROXY="$http_proxy"; fi
@@ -90,89 +73,111 @@
         if [ -n "''${all_proxy:-}" ] && [ -z "''${ALL_PROXY:-}" ]; then export ALL_PROXY="$all_proxy"; fi
         if [ -n "''${NO_PROXY:-}" ] && [ -z "''${no_proxy:-}" ]; then export no_proxy="$NO_PROXY"; fi
         if [ -n "''${no_proxy:-}" ] && [ -z "''${NO_PROXY:-}" ]; then export NO_PROXY="$no_proxy"; fi
-        EOF
+      '';
 
-        cat > $out/bin/hermes-image-entrypoint <<'EOF'
-        #!/bin/sh
-        set -eu
+      hermesManagedDirs = [
+        "backups"
+        "cron"
+        "sessions"
+        "logs"
+        "logs/gateways"
+        "hooks"
+        "memories"
+        "skills"
+        "skins"
+        "plans"
+        "workspace"
+        "home"
+        "profiles"
+        "pairing"
+        "platforms/pairing"
+        "lazy-packages"
+      ];
 
-        export PATH="/bin:/usr/bin:/run/current-system/sw/bin:$PATH"
+      hermesManagedFiles = [
+        "auth.json"
+        "auth.lock"
+        ".env"
+        "config.yaml"
+        "state.db"
+        "state.db-shm"
+        "state.db-wal"
+        "hermes_state.db"
+        "response_store.db"
+        "response_store.db-shm"
+        "response_store.db-wal"
+        "gateway.pid"
+        "gateway.lock"
+        "gateway_state.json"
+        "processes.json"
+        "active_profile"
+      ];
 
-        if [ -r /etc/profile.d/proxy.sh ]; then
-          . /etc/profile.d/proxy.sh
-        fi
+      executableTemplate =
+        name: src: replacements:
+        pkgs.replaceVarsWith {
+          inherit name src replacements;
+          isExecutable = true;
+        };
 
-        if ! s6-setuidgid hermes sh -c 'for path do test -r "$path" && test -w "$path" && test -x "$path" || exit 1; done' sh /data /data/.hermes /home/hermes; then
-          echo "Hermes cannot read/write /data, /data/.hermes, or /home/hermes." >&2
-          echo "Check the mounted volume or bind-mount permissions for /data and /home/hermes." >&2
-          ls -ld /data /data/.hermes /home/hermes >&2 || true
-          exit 1
-        fi
+      realHermes = "${hermesPackage}/bin/hermes";
+      managedDirsWords = lib.concatMapStringsSep " " lib.escapeShellArg hermesManagedDirs;
+      managedFilesWords = lib.concatMapStringsSep " " lib.escapeShellArg hermesManagedFiles;
 
-        for hermes_config_file in /data/.hermes/config.yaml /data/.hermes/.env; do
-          if [ -e "$hermes_config_file" ]; then
-            :
-          elif [ -L "$hermes_config_file" ]; then
-            echo "Hermes config path is a broken symlink: $hermes_config_file" >&2
-            ls -ld /data /data/.hermes "$hermes_config_file" >&2 || true
-            exit 1
-          else
-            continue
-          fi
+      hermesShim = executableTemplate "nix-for-hermes-hermes-shim" ./files/hermes-shim.sh.in {
+        inherit realHermes;
+      };
 
-          if ! s6-setuidgid hermes sh -c 'test -r "$1"' sh "$hermes_config_file"; then
-            echo "Hermes cannot read $hermes_config_file." >&2
-            echo "Check the mounted volume or bind-mount permissions for /data/.hermes and any symlink targets." >&2
-            ls -ld /data /data/.hermes "$hermes_config_file" >&2 || true
-            exit 1
-          fi
-        done
+      hermesImageEntrypoint =
+        executableTemplate "hermes-image-entrypoint" ./files/hermes-image-entrypoint.sh.in
+          {
+            inherit containerPath managedDirsWords managedFilesWords;
+          };
 
-        if [ "$#" -gt 0 ]; then
-          exec "$@"
-        fi
+      nixDaemonRun = ./files/nix-daemon-run.sh;
 
-        exec s6-svscan /etc/s6-services
-        EOF
-        chmod 0755 $out/bin/hermes-image-entrypoint
+      hermesGatewayRun = executableTemplate "hermes-gateway-run" ./files/hermes-gateway-run.sh.in {
+        inherit realHermes;
+      };
 
-        cat > $out/etc/s6-services/nix-daemon/run <<'EOF'
-        #!/bin/sh
-        exec 2>&1
-        export HOME=/root
-        . /etc/profile.d/proxy.sh
-        unset NIX_REMOTE
-        exec nix-daemon --daemon
-        EOF
-        chmod 0755 $out/etc/s6-services/nix-daemon/run
+      hermesDashboardRun = executableTemplate "hermes-dashboard-run" ./files/hermes-dashboard-run.sh.in {
+        inherit realHermes;
+      };
 
-        cat > $out/etc/s6-services/hermes-gateway/run <<'EOF'
-        #!/bin/sh
-        exec 2>&1
-        export HOME="''${HOME:-/home/hermes}"
-        export HERMES_HOME="''${HERMES_HOME:-/data/.hermes}"
-        export API_SERVER_ENABLED="''${API_SERVER_ENABLED:-true}"
-        export API_SERVER_HOST="''${API_SERVER_HOST:-0.0.0.0}"
-        export API_SERVER_PORT="''${API_SERVER_PORT:-8642}"
-        export NIX_REMOTE="''${NIX_REMOTE:-daemon}"
-        . /etc/profile.d/proxy.sh
-        exec s6-setuidgid hermes hermes gateway run --replace
-        EOF
-        chmod 0755 $out/etc/s6-services/hermes-gateway/run
+      runtimeDirectories = [
+        "/bin"
+        "/etc/nix"
+        "/etc/profile.d"
+        "/etc/s6-services/nix-daemon"
+        "/etc/s6-services/hermes-gateway"
+        "/etc/s6-services/hermes-dashboard"
+        "/root"
+        "/tmp"
+        "/usr/local/bin"
+        "/var/tmp"
+        "/data/.hermes"
+        "/home/hermes"
+        "/nix/var/nix/daemon-socket"
+        "/nix/var/nix/db"
+        "/nix/var/nix/gcroots/per-user/hermes"
+        "/nix/var/nix/profiles/per-user/hermes"
+        "/nix/var/log/nix/drvs"
+      ];
 
-        cat > $out/etc/s6-services/hermes-dashboard/run <<'EOF'
-        #!/bin/sh
-        exec 2>&1
-        export HOME="''${HOME:-/home/hermes}"
-        export HERMES_HOME="''${HERMES_HOME:-/data/.hermes}"
-        export GATEWAY_HEALTH_URL="''${GATEWAY_HEALTH_URL:-http://127.0.0.1:8642/health}"
-        export HERMES_DASHBOARD_HOST="''${HERMES_DASHBOARD_HOST:-0.0.0.0}"
-        export HERMES_DASHBOARD_PORT="''${HERMES_DASHBOARD_PORT:-9119}"
-        export NIX_REMOTE="''${NIX_REMOTE:-daemon}"
-        . /etc/profile.d/proxy.sh
-        exec s6-setuidgid hermes hermes dashboard --host "$HERMES_DASHBOARD_HOST" --port "$HERMES_DASHBOARD_PORT"
-        EOF
-        chmod 0755 $out/etc/s6-services/hermes-dashboard/run
+      runtimeRoot = pkgs.runCommand "nix-for-hermes-runtime-root" { } ''
+        mkdir -p ${lib.concatMapStringsSep " " (path: "$out${path}") runtimeDirectories}
+
+        install -Dm0644 ${passwdFile} $out/etc/passwd
+        install -Dm0644 ${groupFile} $out/etc/group
+        install -Dm0644 ${nsswitchFile} $out/etc/nsswitch.conf
+        install -Dm0644 ${nixConfFile} $out/etc/nix/nix.conf
+        install -Dm0644 ${proxyProfile} $out/etc/profile.d/proxy.sh
+
+        install -Dm0755 ${hermesShim} $out/usr/local/bin/hermes
+        install -Dm0755 ${hermesImageEntrypoint} $out/bin/hermes-image-entrypoint
+        install -Dm0755 ${nixDaemonRun} $out/etc/s6-services/nix-daemon/run
+        install -Dm0755 ${hermesGatewayRun} $out/etc/s6-services/hermes-gateway/run
+        install -Dm0755 ${hermesDashboardRun} $out/etc/s6-services/hermes-dashboard/run
       '';
 
       imagePackages = with pkgs; [
@@ -238,7 +243,7 @@
             "NIX_REMOTE=daemon"
             "NIX_SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
             "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-            "PATH=/bin:/usr/bin"
+            "PATH=/usr/local/bin:/bin:/usr/bin"
           ];
           Volumes = {
             "/data" = { };

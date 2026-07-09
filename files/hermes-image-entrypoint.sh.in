@@ -1,0 +1,116 @@
+#!/bin/sh
+set -eu
+
+export PATH="@containerPath@:/run/current-system/sw/bin:$PATH"
+export HOME="${HOME:-/home/hermes}"
+export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
+
+if [ -r /etc/profile.d/proxy.sh ]; then
+  . /etc/profile.d/proxy.sh
+fi
+
+as_hermes() {
+  if [ "$(id -u)" = 0 ]; then
+    s6-setuidgid hermes "$@"
+  else
+    "$@"
+  fi
+}
+
+path_has_symlink_component() {
+  path="$1"
+  root="${2:-$HERMES_HOME}"
+  while [ -n "$path" ] && [ "$path" != "/" ]; do
+    if [ -L "$path" ]; then
+      return 0
+    fi
+    if [ "$path" = "$root" ]; then
+      break
+    fi
+    parent="$(dirname "$path")"
+    if [ "$parent" = "$path" ]; then
+      break
+    fi
+    path="$parent"
+  done
+  return 1
+}
+
+chown_if_safe() {
+  target="$1"
+  if path_has_symlink_component "$target"; then
+    echo "Hermes warning: refusing to chown through symlinked path $target" >&2
+    return 0
+  fi
+  chown hermes:hermes "$target" 2>/dev/null || true
+}
+
+chown_tree_if_safe() {
+  target="$1"
+  if path_has_symlink_component "$target"; then
+    echo "Hermes warning: refusing to recursively chown through symlinked path $target" >&2
+    return 0
+  fi
+  chown -R hermes:hermes "$target" 2>/dev/null || true
+}
+
+mkdir -p "$HERMES_HOME" /home/hermes
+chown_if_safe /data
+chown_if_safe "$HERMES_HOME"
+chown_if_safe /home/hermes
+
+for hermes_managed_dir in @managedDirsWords@; do
+  as_hermes mkdir -p "$HERMES_HOME/$hermes_managed_dir"
+done
+
+for hermes_owned_dir in @managedDirsWords@; do
+  if [ -e "$HERMES_HOME/$hermes_owned_dir" ]; then
+    chown_tree_if_safe "$HERMES_HOME/$hermes_owned_dir"
+  fi
+done
+
+for hermes_owned_file in @managedFilesWords@; do
+  if [ -e "$HERMES_HOME/$hermes_owned_file" ]; then
+    chown_if_safe "$HERMES_HOME/$hermes_owned_file"
+  fi
+done
+
+if [ -f "$HERMES_HOME/.env" ] && ! path_has_symlink_component "$HERMES_HOME/.env"; then
+  chmod 600 "$HERMES_HOME/.env" 2>/dev/null || true
+fi
+
+if [ -f "$HERMES_HOME/config.yaml" ] && ! path_has_symlink_component "$HERMES_HOME/config.yaml"; then
+  chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+fi
+
+if ! as_hermes sh -c 'for path do test -r "$path" && test -w "$path" && test -x "$path" || exit 1; done' sh /data "$HERMES_HOME" /home/hermes; then
+  echo "Hermes cannot read/write /data, $HERMES_HOME, or /home/hermes." >&2
+  echo "Check the mounted volume or bind-mount permissions for /data and /home/hermes." >&2
+  ls -ld /data "$HERMES_HOME" /home/hermes >&2 || true
+  exit 1
+fi
+
+for hermes_config_file in "$HERMES_HOME/config.yaml" "$HERMES_HOME/.env"; do
+  if [ -e "$hermes_config_file" ]; then
+    :
+  elif [ -L "$hermes_config_file" ]; then
+    echo "Hermes config path is a broken symlink: $hermes_config_file" >&2
+    ls -ld /data "$HERMES_HOME" "$hermes_config_file" >&2 || true
+    exit 1
+  else
+    continue
+  fi
+
+  if ! as_hermes sh -c 'test -r "$1"' sh "$hermes_config_file"; then
+    echo "Hermes cannot read $hermes_config_file." >&2
+    echo "Check the mounted volume or bind-mount permissions for $HERMES_HOME and any symlink targets." >&2
+    ls -ld /data "$HERMES_HOME" "$hermes_config_file" >&2 || true
+    exit 1
+  fi
+done
+
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
+
+exec s6-svscan /etc/s6-services
