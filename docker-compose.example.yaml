@@ -3,6 +3,8 @@ services:
     image: nix-for-hermes:0.18.2
     container_name: hermes
     restart: unless-stopped
+    # The entrypoint starts as root to fix bind-mount permissions, then services run as uid/gid 10000.
+    user: "0:0"
     ports:
       - "8642:8642"
       - "9119:9119"
@@ -19,6 +21,7 @@ services:
       all_proxy: "http://example.com"
       no_proxy: "127.0.0.1,localhost,::1"
     volumes:
+      # Host files under these directories must be readable by container uid/gid 10000 after startup.
       - ./data:/data
       - ./home:/home/hermes
       - ./nix:/nix

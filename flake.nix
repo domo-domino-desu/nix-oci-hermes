@@ -117,7 +117,15 @@
         chmod -R u+rwX /data /home/hermes
         chmod -R u+rwX /nix/var/nix /nix/var/log/nix
         chown -R hermes:hermes /data /home/hermes /nix/var/nix/gcroots/per-user/hermes /nix/var/nix/profiles/per-user/hermes
+        chmod -R u+rwX /data /home/hermes
         chmod -R u+rwX /nix/var/nix/gcroots/per-user/hermes /nix/var/nix/profiles/per-user/hermes
+
+        if [ -e /data/.hermes/.env ] && ! s6-setuidgid hermes sh -c 'test -r /data/.hermes/.env'; then
+          echo "Hermes cannot read /data/.hermes/.env after ownership repair." >&2
+          echo "Check the host bind mount permissions for ./data/.hermes/.env." >&2
+          ls -ld /data /data/.hermes /data/.hermes/.env >&2 || true
+          exit 1
+        fi
 
         if [ "$#" -gt 0 ]; then
           exec "$@"
