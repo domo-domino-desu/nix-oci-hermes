@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
   packages: write
 
 concurrency:
@@ -31,6 +32,11 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
             accept-flake-config = true
+
+      - name: Cache Nix builds
+        uses: DeterminateSystems/magic-nix-cache-action@v14
+        with:
+          use-flakehub: false
 
       - name: Check flake
         run: nix flake check -L
