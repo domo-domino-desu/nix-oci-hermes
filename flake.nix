@@ -45,7 +45,7 @@
           $out/root \
           $out/tmp \
           $out/var/tmp \
-          $out/data \
+          $out/data/.hermes \
           $out/home/hermes \
           $out/nix/var/nix/daemon-socket \
           $out/nix/var/nix/db \
@@ -102,45 +102,16 @@
           . /etc/profile.d/proxy.sh
         fi
 
-        mkdir -p \
-          /data/.hermes \
-          /home/hermes \
-          /tmp \
-          /var/tmp \
-          /nix/var/nix/daemon-socket \
-          /nix/var/nix/db \
-          /nix/var/nix/gcroots/per-user/hermes \
-          /nix/var/nix/profiles/per-user/hermes \
-          /nix/var/log/nix/drvs
-
-        chmod 1777 /tmp /var/tmp
-
-        repair_hermes_tree() {
-          chmod -R a+rwX "$1"
-          chown -R hermes:hermes "$1" 2>/dev/null || true
-          chmod -R a+rwX "$1"
-        }
-
-        for hermes_rw_tree in /data /home/hermes; do
-          repair_hermes_tree "$hermes_rw_tree"
-        done
-
-        chmod -R u+rwX /nix/var/nix /nix/var/log/nix
-        chown -R hermes:hermes /nix/var/nix/gcroots/per-user/hermes /nix/var/nix/profiles/per-user/hermes
-        chmod -R u+rwX /nix/var/nix/gcroots/per-user/hermes /nix/var/nix/profiles/per-user/hermes
-
-        chmod a+rwx /data /data/.hermes /home/hermes
-        if ! s6-setuidgid hermes sh -c 'for path do test -r "$path" && test -w "$path" && test -x "$path" || exit 1; done' sh /data /home/hermes; then
-          echo "Hermes cannot read/write /data or /home/hermes after permission repair." >&2
-          echo "Check the host bind mount permissions for ./data and ./home." >&2
-          ls -ld /data /home/hermes >&2 || true
+        if ! s6-setuidgid hermes sh -c 'for path do test -r "$path" && test -w "$path" && test -x "$path" || exit 1; done' sh /data /data/.hermes /home/hermes; then
+          echo "Hermes cannot read/write /data, /data/.hermes, or /home/hermes." >&2
+          echo "Check the mounted volume or bind-mount permissions for /data and /home/hermes." >&2
+          ls -ld /data /data/.hermes /home/hermes >&2 || true
           exit 1
         fi
 
         for hermes_config_file in /data/.hermes/config.yaml /data/.hermes/.env; do
           if [ -e "$hermes_config_file" ]; then
-            chown hermes:hermes "$hermes_config_file" 2>/dev/null || true
-            chmod a+rw "$hermes_config_file" 2>/dev/null || true
+            :
           elif [ -L "$hermes_config_file" ]; then
             echo "Hermes config path is a broken symlink: $hermes_config_file" >&2
             ls -ld /data /data/.hermes "$hermes_config_file" >&2 || true
@@ -150,8 +121,8 @@
           fi
 
           if ! s6-setuidgid hermes sh -c 'test -r "$1"' sh "$hermes_config_file"; then
-            echo "Hermes cannot read $hermes_config_file after ownership repair." >&2
-            echo "Check the host bind mount permissions for ./data/.hermes and any symlink targets." >&2
+            echo "Hermes cannot read $hermes_config_file." >&2
+            echo "Check the mounted volume or bind-mount permissions for /data/.hermes and any symlink targets." >&2
             ls -ld /data /data/.hermes "$hermes_config_file" >&2 || true
             exit 1
           fi
@@ -243,6 +214,13 @@
         ++ imagePackages;
         extraCommands = ''
           cp -a ${runtimeRoot}/. .
+        '';
+        fakeRootCommands = ''
+          chmod 1777 ./tmp ./var/tmp
+          chown -R 10000:10000 ./data ./home/hermes
+          chmod -R u+rwX,go-rwx ./data ./home/hermes
+          chown -R 10000:10000 ./nix/var/nix/gcroots/per-user/hermes ./nix/var/nix/profiles/per-user/hermes
+          chmod -R u+rwX,go-rwx ./nix/var/nix/gcroots/per-user/hermes ./nix/var/nix/profiles/per-user/hermes
         '';
         maxLayers = 120;
         config = {
