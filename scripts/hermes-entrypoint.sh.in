@@ -5,6 +5,19 @@ export PATH="@containerPath@:/run/current-system/sw/bin:$PATH"
 export HOME="${HOME:-/home/hermes}"
 export HERMES_HOME="${HERMES_HOME:-/data/.hermes}"
 
+case "$HERMES_HOME" in
+  /*)
+    if [ "$HERMES_HOME" = "/" ]; then
+      echo "HERMES_HOME must not be the filesystem root." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    echo "HERMES_HOME must be an absolute path: $HERMES_HOME" >&2
+    exit 1
+    ;;
+esac
+
 if [ -r /etc/profile.d/proxy.sh ]; then
   . /etc/profile.d/proxy.sh
 fi
