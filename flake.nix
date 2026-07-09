@@ -177,6 +177,7 @@
       imagePackages = with pkgs; [
         bashInteractive
         cacert
+        chromium
         commaPackage
         coreutils
         curl
@@ -185,11 +186,13 @@
         git
         gnugrep
         gnused
+        gnutar
         gzip
         hermesPackage
         iproute2
         jq
         nix
+        nodejs_22
         openssh
         procps
         ripgrep
@@ -197,7 +200,6 @@
         s6-rc
         shadow
         stdenv.cc.cc.lib
-        gnutar
         xz
       ];
 
