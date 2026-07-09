@@ -21,7 +21,6 @@ services:
       all_proxy: "http://example.com"
       no_proxy: "127.0.0.1,localhost,::1"
     volumes:
-      # Host files under these directories must be readable by container uid/gid 10000 after startup.
+      # The entrypoint repairs /data and /home/hermes permissions before services drop to uid/gid 10000.
       - ./data:/data
       - ./home:/home/hermes
-      - ./nix:/nix

@@ -114,18 +114,48 @@
           /nix/var/log/nix/drvs
 
         chmod 1777 /tmp /var/tmp
-        chmod -R u+rwX /data /home/hermes
+
+        repair_hermes_tree() {
+          chmod -R a+rwX "$1"
+          chown -R hermes:hermes "$1" 2>/dev/null || true
+          chmod -R a+rwX "$1"
+        }
+
+        for hermes_rw_tree in /data /home/hermes; do
+          repair_hermes_tree "$hermes_rw_tree"
+        done
+
         chmod -R u+rwX /nix/var/nix /nix/var/log/nix
-        chown -R hermes:hermes /data /home/hermes /nix/var/nix/gcroots/per-user/hermes /nix/var/nix/profiles/per-user/hermes
-        chmod -R u+rwX /data /home/hermes
+        chown -R hermes:hermes /nix/var/nix/gcroots/per-user/hermes /nix/var/nix/profiles/per-user/hermes
         chmod -R u+rwX /nix/var/nix/gcroots/per-user/hermes /nix/var/nix/profiles/per-user/hermes
 
-        if [ -e /data/.hermes/.env ] && ! s6-setuidgid hermes sh -c 'test -r /data/.hermes/.env'; then
-          echo "Hermes cannot read /data/.hermes/.env after ownership repair." >&2
-          echo "Check the host bind mount permissions for ./data/.hermes/.env." >&2
-          ls -ld /data /data/.hermes /data/.hermes/.env >&2 || true
+        chmod a+rwx /data /data/.hermes /home/hermes
+        if ! s6-setuidgid hermes sh -c 'for path do test -r "$path" && test -w "$path" && test -x "$path" || exit 1; done' sh /data /home/hermes; then
+          echo "Hermes cannot read/write /data or /home/hermes after permission repair." >&2
+          echo "Check the host bind mount permissions for ./data and ./home." >&2
+          ls -ld /data /home/hermes >&2 || true
           exit 1
         fi
+
+        for hermes_config_file in /data/.hermes/config.yaml /data/.hermes/.env; do
+          if [ -e "$hermes_config_file" ]; then
+            chown hermes:hermes "$hermes_config_file" 2>/dev/null || true
+            chmod a+rw "$hermes_config_file" 2>/dev/null || true
+          elif [ -L "$hermes_config_file" ]; then
+            echo "Hermes config path is a broken symlink: $hermes_config_file" >&2
+            ls -ld /data /data/.hermes "$hermes_config_file" >&2 || true
+            exit 1
+          else
+            continue
+          fi
+
+          if ! s6-setuidgid hermes sh -c 'test -r "$1"' sh "$hermes_config_file"; then
+            echo "Hermes cannot read $hermes_config_file after ownership repair." >&2
+            echo "Check the host bind mount permissions for ./data/.hermes and any symlink targets." >&2
+            ls -ld /data /data/.hermes "$hermes_config_file" >&2 || true
+            exit 1
+          fi
+        done
 
         if [ "$#" -gt 0 ]; then
           exec "$@"
@@ -235,7 +265,6 @@
           Volumes = {
             "/data" = { };
             "/home/hermes" = { };
-            "/nix" = { };
           };
           WorkingDir = "/data";
           Healthcheck = {
@@ -273,7 +302,7 @@
       };
 
       checks.${system} = {
-        inherit dockerImage runtimeRoot;
+        inherit runtimeRoot;
       };
 
       formatter.${system} = pkgs.nixfmt;
